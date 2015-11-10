@@ -5,7 +5,7 @@ module.exports = (grunt) ->
   {spawn} = require('./task-helpers')(grunt)
 
   getVersion = (callback) ->
-    onBuildMachine = process.env.JANKY_SHA1 and process.env.JANKY_BRANCH is 'master'
+    onBuildMachine = process.env.JANKY_SHA1 and process.env.JANKY_BRANCH in ['stable', 'beta']
     inRepository = fs.existsSync(path.resolve(__dirname, '..', '..', '.git'))
     {version} = require(path.join(grunt.config.get('atom.appDir'), 'package.json'))
     if onBuildMachine or not inRepository
@@ -32,7 +32,7 @@ module.exports = (grunt) ->
       packageJsonPath = path.join(appDir, 'package.json')
       packageJson = require(packageJsonPath)
       packageJson.version = version
-      packageJsonString = JSON.stringify(packageJson, null, 2)
+      packageJsonString = JSON.stringify(packageJson)
       fs.writeFileSync(packageJsonPath, packageJsonString)
 
       if process.platform is 'darwin'
@@ -46,7 +46,7 @@ module.exports = (grunt) ->
         strings =
           CompanyName: 'GitHub, Inc.'
           FileDescription: 'Atom'
-          LegalCopyright: 'Copyright (C) 2014 GitHub, Inc. All rights reserved'
+          LegalCopyright: 'Copyright (C) 2015 GitHub, Inc. All rights reserved'
           ProductName: 'Atom'
           ProductVersion: version
 

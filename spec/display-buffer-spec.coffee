@@ -7,7 +7,10 @@ describe "DisplayBuffer", ->
     tabLength = 2
 
     buffer = atom.project.bufferForPathSync('sample.js')
-    displayBuffer = new DisplayBuffer({buffer, tabLength})
+    displayBuffer = new DisplayBuffer({
+      buffer, tabLength, config: atom.config, grammarRegistry: atom.grammars,
+      packageManager: atom.packages, assert: ->
+    })
     changeHandler = jasmine.createSpy 'changeHandler'
     displayBuffer.onDidChange changeHandler
 
@@ -44,25 +47,55 @@ describe "DisplayBuffer", ->
     it "renders line numbers correctly", ->
       originalLineCount = displayBuffer.getLineCount()
       oneHundredLines = [0..100].join("\n")
-      buffer.insert([0,0], oneHundredLines)
+      buffer.insert([0, 0], oneHundredLines)
       expect(displayBuffer.getLineCount()).toBe 100 + originalLineCount
 
-    it "reassigns the scrollTop if it exceeds the max possible value after lines are removed", ->
-      displayBuffer.manageScrollPosition = true
-      displayBuffer.setHeight(50)
-      displayBuffer.setLineHeightInPixels(10)
-      displayBuffer.setScrollTop(80)
-
-      buffer.delete([[8, 0], [10, 0]])
-      expect(displayBuffer.getScrollTop()).toBe 60
+    it "updates the display buffer prior to invoking change handlers registered on the buffer", ->
+      buffer.onDidChange -> expect(displayBuffer2.tokenizedLineForScreenRow(0).text).toBe "testing"
+      displayBuffer2 = new DisplayBuffer({
+        buffer, tabLength, config: atom.config, grammarRegistry: atom.grammars,
+        packageManager: atom.packages, assert: ->
+      })
+      buffer.setText("testing")
 
   describe "soft wrapping", ->
     beforeEach ->
-      displayBuffer.setSoftWrapped(true)
       displayBuffer.setEditorWidthInChars(50)
+      displayBuffer.setSoftWrapped(true)
+      displayBuffer.setDefaultCharWidth(1)
       changeHandler.reset()
 
     describe "rendering of soft-wrapped lines", ->
+      describe "when there are double width characters", ->
+        it "takes them into account when finding the soft wrap column", ->
+          buffer.setText("私たちのフ是一个地方，数千名学生12345业余爱们的板作为hello world this is a pretty long latin line")
+          displayBuffer.setDefaultCharWidth(1, 5, 0, 0)
+
+          expect(displayBuffer.tokenizedLineForScreenRow(0).text).toBe("私たちのフ是一个地方")
+          expect(displayBuffer.tokenizedLineForScreenRow(1).text).toBe("，数千名学生12345业余爱")
+          expect(displayBuffer.tokenizedLineForScreenRow(2).text).toBe("们的板作为hello world this is a ")
+          expect(displayBuffer.tokenizedLineForScreenRow(3).text).toBe("pretty long latin line")
+
+      describe "when there are half width characters", ->
+        it "takes them into account when finding the soft wrap column", ->
+          displayBuffer.setDefaultCharWidth(1, 0, 5, 0)
+          buffer.setText("abcﾪﾫﾬﾈﾇﾈﾉﾊﾋﾌﾋﾌﾇﾴ￮￮￮hello world this is a pretty long line")
+
+          expect(displayBuffer.tokenizedLineForScreenRow(0).text).toBe("abcﾪﾫﾬﾈﾇﾈﾉﾊﾋ")
+          expect(displayBuffer.tokenizedLineForScreenRow(1).text).toBe("ﾌﾋﾌﾇﾴ￮￮￮hello ")
+          expect(displayBuffer.tokenizedLineForScreenRow(2).text).toBe("world this is a pretty long line")
+
+      describe "when there are korean characters", ->
+        it "takes them into account when finding the soft wrap column", ->
+          displayBuffer.setDefaultCharWidth(1, 0, 0, 10)
+          buffer.setText("1234세계를 향한 대화, 유니코 제10회유니코드국제")
+
+          expect(displayBuffer.tokenizedLineForScreenRow(0).text).toBe("1234세계를 ")
+          expect(displayBuffer.tokenizedLineForScreenRow(1).text).toBe("향한 대화, ")
+          expect(displayBuffer.tokenizedLineForScreenRow(2).text).toBe("유니코 ")
+          expect(displayBuffer.tokenizedLineForScreenRow(3).text).toBe("제10회유니")
+          expect(displayBuffer.tokenizedLineForScreenRow(4).text).toBe("코드국제")
+
       describe "when editor.softWrapAtPreferredLineLength is set", ->
         it "uses the preferred line length as the soft wrap column when it is less than the configured soft wrap column", ->
           atom.config.set('editor.preferredLineLength', 100)
@@ -70,10 +103,18 @@ describe "DisplayBuffer", ->
           expect(displayBuffer.tokenizedLineForScreenRow(10).text).toBe '    return '
 
           atom.config.set('editor.preferredLineLength', 5)
-          expect(displayBuffer.tokenizedLineForScreenRow(10).text).toBe 'funct'
+          expect(displayBuffer.tokenizedLineForScreenRow(10).text).toBe '  fun'
 
           atom.config.set('editor.softWrapAtPreferredLineLength', false)
           expect(displayBuffer.tokenizedLineForScreenRow(10).text).toBe '    return '
+
+      describe "when editor width is negative", ->
+        it "does not hang while wrapping", ->
+          displayBuffer.setDefaultCharWidth(1)
+          displayBuffer.setWidth(-1)
+
+          expect(displayBuffer.tokenizedLineForScreenRow(1).text).toBe "  "
+          expect(displayBuffer.tokenizedLineForScreenRow(2).text).toBe "  var sort = function(items) {"
 
       describe "when the line is shorter than the max line length", ->
         it "renders the line unchanged", ->
@@ -87,20 +128,48 @@ describe "DisplayBuffer", ->
         describe "when there is whitespace before the boundary", ->
           it "wraps the line at the end of the first whitespace preceding the boundary", ->
             expect(displayBuffer.tokenizedLineForScreenRow(10).text).toBe '    return '
-            expect(displayBuffer.tokenizedLineForScreenRow(11).text).toBe 'sort(left).concat(pivot).concat(sort(right));'
+            expect(displayBuffer.tokenizedLineForScreenRow(11).text).toBe '    sort(left).concat(pivot).concat(sort(right));'
 
         describe "when there is no whitespace before the boundary", ->
           it "wraps the line exactly at the boundary since there's no more graceful place to wrap it", ->
             buffer.setTextInRange([[0, 0], [1, 0]], 'abcdefghijklmnopqrstuvwxyz\n')
             displayBuffer.setEditorWidthInChars(10)
             expect(displayBuffer.tokenizedLineForScreenRow(0).text).toBe 'abcdefghij'
+            expect(displayBuffer.tokenizedLineForScreenRow(0).bufferDelta).toBe 'abcdefghij'.length
             expect(displayBuffer.tokenizedLineForScreenRow(1).text).toBe 'klmnopqrst'
+            expect(displayBuffer.tokenizedLineForScreenRow(1).bufferDelta).toBe 'klmnopqrst'.length
             expect(displayBuffer.tokenizedLineForScreenRow(2).text).toBe 'uvwxyz'
+            expect(displayBuffer.tokenizedLineForScreenRow(2).bufferDelta).toBe 'uvwxyz'.length
+
+          it "closes all scopes at the wrap boundary", ->
+            displayBuffer.setEditorWidthInChars(10)
+            buffer.setText("`aaa${1+2}aaa`")
+            iterator = displayBuffer.tokenizedLineForScreenRow(1).getTokenIterator()
+            scopes = iterator.getScopes()
+            expect(scopes[scopes.length - 1]).not.toBe 'punctuation.section.embedded.js'
 
       describe "when there is a whitespace character at the max length boundary", ->
         it "wraps the line at the first non-whitespace character following the boundary", ->
           expect(displayBuffer.tokenizedLineForScreenRow(3).text).toBe '    var pivot = items.shift(), current, left = [], '
-          expect(displayBuffer.tokenizedLineForScreenRow(4).text).toBe 'right = [];'
+          expect(displayBuffer.tokenizedLineForScreenRow(4).text).toBe '    right = [];'
+
+      describe "when the only whitespace characters are at the beginning of the line", ->
+        beforeEach ->
+          displayBuffer.setEditorWidthInChars(10)
+
+        it "wraps the line at the max length when indented with tabs", ->
+          buffer.setTextInRange([[0, 0], [1, 0]], '\t\tabcdefghijklmnopqrstuvwxyz')
+
+          expect(displayBuffer.tokenizedLineForScreenRow(0).text).toBe '    abcdef'
+          expect(displayBuffer.tokenizedLineForScreenRow(1).text).toBe '    ghijkl'
+          expect(displayBuffer.tokenizedLineForScreenRow(2).text).toBe '    mnopqr'
+
+        it "wraps the line at the max length when indented with spaces", ->
+          buffer.setTextInRange([[0, 0], [1, 0]], '    abcdefghijklmnopqrstuvwxyz')
+
+          expect(displayBuffer.tokenizedLineForScreenRow(0).text).toBe '    abcdef'
+          expect(displayBuffer.tokenizedLineForScreenRow(1).text).toBe '    ghijkl'
+          expect(displayBuffer.tokenizedLineForScreenRow(2).text).toBe '    mnopqr'
 
       describe "when there are hard tabs", ->
         beforeEach ->
@@ -109,6 +178,44 @@ describe "DisplayBuffer", ->
         it "correctly tokenizes the hard tabs", ->
           expect(displayBuffer.tokenizedLineForScreenRow(3).tokens[0].isHardTab).toBeTruthy()
           expect(displayBuffer.tokenizedLineForScreenRow(3).tokens[1].isHardTab).toBeTruthy()
+
+      describe "when a line is wrapped", ->
+        it "breaks soft-wrap indentation into a token for each indentation level to support indent guides", ->
+          tokenizedLine = displayBuffer.tokenizedLineForScreenRow(4)
+
+          expect(tokenizedLine.tokens[0].value).toBe("  ")
+          expect(tokenizedLine.tokens[0].isSoftWrapIndentation).toBeTruthy()
+
+          expect(tokenizedLine.tokens[1].value).toBe("  ")
+          expect(tokenizedLine.tokens[1].isSoftWrapIndentation).toBeTruthy()
+
+          expect(tokenizedLine.tokens[2].isSoftWrapIndentation).toBeFalsy()
+
+      describe "when editor.softWrapHangingIndent is set", ->
+        beforeEach ->
+          atom.config.set('editor.softWrapHangingIndent', 3)
+
+        it "further indents wrapped lines", ->
+          expect(displayBuffer.tokenizedLineForScreenRow(10).text).toBe "    return "
+          expect(displayBuffer.tokenizedLineForScreenRow(11).text).toBe "       sort(left).concat(pivot).concat(sort(right)"
+          expect(displayBuffer.tokenizedLineForScreenRow(12).text).toBe "       );"
+
+        it "includes hanging indent when breaking soft-wrap indentation into tokens", ->
+          tokenizedLine = displayBuffer.tokenizedLineForScreenRow(4)
+
+          expect(tokenizedLine.tokens[0].value).toBe("  ")
+          expect(tokenizedLine.tokens[0].isSoftWrapIndentation).toBeTruthy()
+
+          expect(tokenizedLine.tokens[1].value).toBe("  ")
+          expect(tokenizedLine.tokens[1].isSoftWrapIndentation).toBeTruthy()
+
+          expect(tokenizedLine.tokens[2].value).toBe("  ") # hanging indent
+          expect(tokenizedLine.tokens[2].isSoftWrapIndentation).toBeTruthy()
+
+          expect(tokenizedLine.tokens[3].value).toBe(" ") # odd space
+          expect(tokenizedLine.tokens[3].isSoftWrapIndentation).toBeTruthy()
+
+          expect(tokenizedLine.tokens[4].isSoftWrapIndentation).toBeFalsy()
 
     describe "when the buffer changes", ->
       describe "when buffer lines are updated", ->
@@ -133,8 +240,8 @@ describe "DisplayBuffer", ->
           it "rewraps the line and emits a change event", ->
             buffer.insert([6, 28], '1234567890')
             expect(displayBuffer.tokenizedLineForScreenRow(7).text).toBe '      current < pivot ? '
-            expect(displayBuffer.tokenizedLineForScreenRow(8).text).toBe 'left1234567890.push(current) : '
-            expect(displayBuffer.tokenizedLineForScreenRow(9).text).toBe 'right.push(current);'
+            expect(displayBuffer.tokenizedLineForScreenRow(8).text).toBe '      left1234567890.push(current) : '
+            expect(displayBuffer.tokenizedLineForScreenRow(9).text).toBe '      right.push(current);'
             expect(displayBuffer.tokenizedLineForScreenRow(10).text).toBe '    }'
 
             expect(changeHandler).toHaveBeenCalledWith(start: 7, end: 8, screenDelta: 1, bufferDelta: 0)
@@ -143,7 +250,7 @@ describe "DisplayBuffer", ->
         it "inserts / updates wrapped lines and emits a change event", ->
           buffer.insert([6, 21], '1234567890 abcdefghij 1234567890\nabcdefghij')
           expect(displayBuffer.tokenizedLineForScreenRow(7).text).toBe '      current < pivot1234567890 abcdefghij '
-          expect(displayBuffer.tokenizedLineForScreenRow(8).text).toBe '1234567890'
+          expect(displayBuffer.tokenizedLineForScreenRow(8).text).toBe '      1234567890'
           expect(displayBuffer.tokenizedLineForScreenRow(9).text).toBe 'abcdefghij ? left.push(current) : '
           expect(displayBuffer.tokenizedLineForScreenRow(10).text).toBe 'right.push(current);'
 
@@ -154,7 +261,7 @@ describe "DisplayBuffer", ->
           buffer.setTextInRange([[3, 21], [7, 5]], ';')
           expect(displayBuffer.tokenizedLineForScreenRow(3).text).toBe '    var pivot = items;'
           expect(displayBuffer.tokenizedLineForScreenRow(4).text).toBe '    return '
-          expect(displayBuffer.tokenizedLineForScreenRow(5).text).toBe 'sort(left).concat(pivot).concat(sort(right));'
+          expect(displayBuffer.tokenizedLineForScreenRow(5).text).toBe '    sort(left).concat(pivot).concat(sort(right));'
           expect(displayBuffer.tokenizedLineForScreenRow(6).text).toBe '  };'
 
           expect(changeHandler).toHaveBeenCalledWith(start: 3, end: 9, screenDelta: -6, bufferDelta: -4)
@@ -162,7 +269,12 @@ describe "DisplayBuffer", ->
       describe "when a newline is inserted, deleted, and re-inserted at the end of a wrapped line (regression)", ->
         it "correctly renders the original wrapped line", ->
           buffer = atom.project.buildBufferSync(null, '')
-          displayBuffer = new DisplayBuffer({buffer, tabLength, editorWidthInChars: 30, softWrapped: true})
+          displayBuffer = new DisplayBuffer({
+            buffer, tabLength, editorWidthInChars: 30, config: atom.config,
+            grammarRegistry: atom.grammars, packageManager: atom.packages, assert: ->
+          })
+          displayBuffer.setDefaultCharWidth(1)
+          displayBuffer.setSoftWrapped(true)
 
           buffer.insert([0, 0], "the quick brown fox jumps over the lazy dog.")
           buffer.insert([0, Infinity], '\n')
@@ -186,10 +298,10 @@ describe "DisplayBuffer", ->
         expect(displayBuffer.bufferPositionForScreenPosition([3, 5])).toEqual([3, 5])
         expect(displayBuffer.screenPositionForBufferPosition([3, 50])).toEqual([3, 50])
         expect(displayBuffer.screenPositionForBufferPosition([3, 51])).toEqual([3, 50])
-        expect(displayBuffer.bufferPositionForScreenPosition([4, 0])).toEqual([3, 51])
+        expect(displayBuffer.bufferPositionForScreenPosition([4, 0])).toEqual([3, 50])
         expect(displayBuffer.bufferPositionForScreenPosition([3, 50])).toEqual([3, 50])
-        expect(displayBuffer.screenPositionForBufferPosition([3, 62])).toEqual([4, 11])
-        expect(displayBuffer.bufferPositionForScreenPosition([4, 11])).toEqual([3, 62])
+        expect(displayBuffer.screenPositionForBufferPosition([3, 62])).toEqual([4, 15])
+        expect(displayBuffer.bufferPositionForScreenPosition([4, 11])).toEqual([3, 58])
 
         # following a wrapped line
         expect(displayBuffer.screenPositionForBufferPosition([4, 5])).toEqual([5, 5])
@@ -203,10 +315,13 @@ describe "DisplayBuffer", ->
 
     describe ".setEditorWidthInChars(length)", ->
       it "changes the length at which lines are wrapped and emits a change event for all screen lines", ->
+        tokensText = (tokens) ->
+          _.pluck(tokens, 'value').join('')
+
         displayBuffer.setEditorWidthInChars(40)
-        expect(tokensText displayBuffer.tokenizedLineForScreenRow(4).tokens).toBe 'left = [], right = [];'
+        expect(tokensText displayBuffer.tokenizedLineForScreenRow(4).tokens).toBe '    left = [], right = [];'
         expect(tokensText displayBuffer.tokenizedLineForScreenRow(5).tokens).toBe '    while(items.length > 0) {'
-        expect(tokensText displayBuffer.tokenizedLineForScreenRow(12).tokens).toBe 'sort(left).concat(pivot).concat(sort(rig'
+        expect(tokensText displayBuffer.tokenizedLineForScreenRow(12).tokens).toBe '    sort(left).concat(pivot).concat(sort'
         expect(changeHandler).toHaveBeenCalledWith(start: 0, end: 15, screenDelta: 3, bufferDelta: 0)
 
       it "only allows positive widths to be assigned", ->
@@ -215,25 +330,15 @@ describe "DisplayBuffer", ->
         displayBuffer.setEditorWidthInChars(-1)
         expect(displayBuffer.editorWidthInChars).not.toBe -1
 
-    it "sets ::scrollLeft to 0 and keeps it there when soft wrapping is enabled", ->
-      displayBuffer.setDefaultCharWidth(10)
-      displayBuffer.setWidth(50)
-      displayBuffer.manageScrollPosition = true
-
-      displayBuffer.setSoftWrapped(false)
-      displayBuffer.setScrollLeft(Infinity)
-      expect(displayBuffer.getScrollLeft()).toBeGreaterThan 0
-      displayBuffer.setSoftWrapped(true)
-      expect(displayBuffer.getScrollLeft()).toBe 0
-      displayBuffer.setScrollLeft(10)
-      expect(displayBuffer.getScrollLeft()).toBe 0
-
   describe "primitive folding", ->
     beforeEach ->
       displayBuffer.destroy()
       buffer.release()
       buffer = atom.project.bufferForPathSync('two-hundred.txt')
-      displayBuffer = new DisplayBuffer({buffer, tabLength})
+      displayBuffer = new DisplayBuffer({
+        buffer, tabLength, config: atom.config, grammarRegistry: atom.grammars,
+        packageManager: atom.packages, assert: ->
+      })
       displayBuffer.onDidChange changeHandler
 
     describe "when folds are created and destroyed", ->
@@ -312,12 +417,12 @@ describe "DisplayBuffer", ->
 
       describe "when creating a fold where one already exists", ->
         it "returns existing fold and does't create new fold", ->
-          fold = displayBuffer.createFold(0,10)
-          expect(displayBuffer.findMarkers(class: 'fold').length).toBe 1
+          fold = displayBuffer.createFold(0, 10)
+          expect(displayBuffer.foldsMarkerLayer.getMarkers().length).toBe 1
 
-          newFold = displayBuffer.createFold(0,10)
+          newFold = displayBuffer.createFold(0, 10)
           expect(newFold).toBe fold
-          expect(displayBuffer.findMarkers(class: 'fold').length).toBe 1
+          expect(displayBuffer.foldsMarkerLayer.getMarkers().length).toBe 1
 
       describe "when a fold is created inside an existing folded region", ->
         it "creates/destroys the fold, but does not trigger change event", ->
@@ -346,10 +451,18 @@ describe "DisplayBuffer", ->
           expect(displayBuffer.tokenizedLineForScreenRow(1).text).toMatch /^10/
 
       describe "when there is another display buffer pointing to the same buffer", ->
-        it "does not create folds in the other display buffer", ->
-          otherDisplayBuffer = new DisplayBuffer({buffer, tabLength})
+        it "does not consider folds to be nested inside of folds from the other display buffer", ->
+          otherDisplayBuffer = new DisplayBuffer({
+            buffer, tabLength, config: atom.config, grammarRegistry: atom.grammars,
+            packageManager: atom.packages, assert: ->
+          })
+          otherDisplayBuffer.createFold(1, 5)
+
           displayBuffer.createFold(2, 4)
           expect(otherDisplayBuffer.foldsStartingAtBufferRow(2).length).toBe 0
+
+          expect(displayBuffer.tokenizedLineForScreenRow(2).text).toBe '2'
+          expect(displayBuffer.tokenizedLineForScreenRow(3).text).toBe '5'
 
     describe "when the buffer changes", ->
       [fold1, fold2] = []
@@ -566,8 +679,12 @@ describe "DisplayBuffer", ->
         expect(displayBuffer.outermostFoldsInBufferRowRange(3, 18)).toEqual [fold1, fold3, fold5]
         expect(displayBuffer.outermostFoldsInBufferRowRange(5, 16)).toEqual [fold3]
 
-  describe "::clipScreenPosition(screenPosition, wrapBeyondNewlines: false, wrapAtSoftNewlines: false, skipAtomicTokens: false)", ->
+  describe "::clipScreenPosition(screenPosition, wrapBeyondNewlines: false, wrapAtSoftNewlines: false, clip: 'closest')", ->
     beforeEach ->
+      tabLength = 4
+
+      displayBuffer.setDefaultCharWidth(1)
+      displayBuffer.setTabLength(tabLength)
       displayBuffer.setSoftWrapped(true)
       displayBuffer.setEditorWidthInChars(50)
 
@@ -587,8 +704,8 @@ describe "DisplayBuffer", ->
     describe "when wrapBeyondNewlines is false (the default)", ->
       it "wraps positions beyond the end of hard newlines to the end of the line", ->
         expect(displayBuffer.clipScreenPosition([1, 10000])).toEqual [1, 30]
-        expect(displayBuffer.clipScreenPosition([4, 30])).toEqual [4, 11]
-        expect(displayBuffer.clipScreenPosition([4, 1000])).toEqual [4, 11]
+        expect(displayBuffer.clipScreenPosition([4, 30])).toEqual [4, 15]
+        expect(displayBuffer.clipScreenPosition([4, 1000])).toEqual [4, 15]
 
     describe "when wrapBeyondNewlines is true", ->
       it "wraps positions past the end of hard newlines to the next line", ->
@@ -600,6 +717,18 @@ describe "DisplayBuffer", ->
         displayBuffer.createFold(3, 5)
         expect(displayBuffer.clipScreenPosition([3, 5], wrapBeyondNewlines: true)).toEqual [4, 0]
 
+    describe "when skipSoftWrapIndentation is false (the default)", ->
+      it "wraps positions at the end of previous soft-wrapped line", ->
+        expect(displayBuffer.clipScreenPosition([4, 0])).toEqual [3, 50]
+        expect(displayBuffer.clipScreenPosition([4, 1])).toEqual [3, 50]
+        expect(displayBuffer.clipScreenPosition([4, 3])).toEqual [3, 50]
+
+    describe "when skipSoftWrapIndentation is true", ->
+      it "clips positions to the beginning of the line", ->
+        expect(displayBuffer.clipScreenPosition([4, 0], skipSoftWrapIndentation: true)).toEqual [4, 4]
+        expect(displayBuffer.clipScreenPosition([4, 1], skipSoftWrapIndentation: true)).toEqual [4, 4]
+        expect(displayBuffer.clipScreenPosition([4, 3], skipSoftWrapIndentation: true)).toEqual [4, 4]
+
     describe "when wrapAtSoftNewlines is false (the default)", ->
       it "clips positions at the end of soft-wrapped lines to the character preceding the end of the line", ->
         expect(displayBuffer.clipScreenPosition([3, 50])).toEqual [3, 50]
@@ -610,23 +739,32 @@ describe "DisplayBuffer", ->
     describe "when wrapAtSoftNewlines is true", ->
       it "wraps positions at the end of soft-wrapped lines to the next screen line", ->
         expect(displayBuffer.clipScreenPosition([3, 50], wrapAtSoftNewlines: true)).toEqual [3, 50]
-        expect(displayBuffer.clipScreenPosition([3, 51], wrapAtSoftNewlines: true)).toEqual [4, 0]
-        expect(displayBuffer.clipScreenPosition([3, 58], wrapAtSoftNewlines: true)).toEqual [4, 0]
-        expect(displayBuffer.clipScreenPosition([3, 1000], wrapAtSoftNewlines: true)).toEqual [4, 0]
+        expect(displayBuffer.clipScreenPosition([3, 51], wrapAtSoftNewlines: true)).toEqual [4, 4]
+        expect(displayBuffer.clipScreenPosition([3, 58], wrapAtSoftNewlines: true)).toEqual [4, 4]
+        expect(displayBuffer.clipScreenPosition([3, 1000], wrapAtSoftNewlines: true)).toEqual [4, 4]
 
-    describe "when skipAtomicTokens is false (the default)", ->
-      it "clips screen positions in the middle of atomic tab characters to the beginning of the character", ->
+    describe "when clip is 'closest' (the default)", ->
+      it "clips screen positions in the middle of atomic tab characters to the closest edge of the character", ->
         buffer.insert([0, 0], '\t')
         expect(displayBuffer.clipScreenPosition([0, 0])).toEqual [0, 0]
         expect(displayBuffer.clipScreenPosition([0, 1])).toEqual [0, 0]
+        expect(displayBuffer.clipScreenPosition([0, 2])).toEqual [0, 0]
+        expect(displayBuffer.clipScreenPosition([0, tabLength-1])).toEqual [0, tabLength]
         expect(displayBuffer.clipScreenPosition([0, tabLength])).toEqual [0, tabLength]
 
-    describe "when skipAtomicTokens is true", ->
+    describe "when clip is 'backward'", ->
+      it "clips screen positions in the middle of atomic tab characters to the beginning of the character", ->
+        buffer.insert([0, 0], '\t')
+        expect(displayBuffer.clipScreenPosition([0, 0], clip: 'backward')).toEqual [0, 0]
+        expect(displayBuffer.clipScreenPosition([0, tabLength-1], clip: 'backward')).toEqual [0, 0]
+        expect(displayBuffer.clipScreenPosition([0, tabLength], clip: 'backward')).toEqual [0, tabLength]
+
+    describe "when clip is 'forward'", ->
       it "clips screen positions in the middle of atomic tab characters to the end of the character", ->
         buffer.insert([0, 0], '\t')
-        expect(displayBuffer.clipScreenPosition([0, 0], skipAtomicTokens: true)).toEqual [0, 0]
-        expect(displayBuffer.clipScreenPosition([0, 1], skipAtomicTokens: true)).toEqual [0, tabLength]
-        expect(displayBuffer.clipScreenPosition([0, tabLength], skipAtomicTokens: true)).toEqual [0, tabLength]
+        expect(displayBuffer.clipScreenPosition([0, 0], clip: 'forward')).toEqual [0, 0]
+        expect(displayBuffer.clipScreenPosition([0, 1], clip: 'forward')).toEqual [0, tabLength]
+        expect(displayBuffer.clipScreenPosition([0, tabLength], clip: 'forward')).toEqual [0, tabLength]
 
   describe "::screenPositionForBufferPosition(bufferPosition, options)", ->
     it "clips the specified buffer position", ->
@@ -634,6 +772,25 @@ describe "DisplayBuffer", ->
       expect(displayBuffer.screenPositionForBufferPosition([0, 100000])).toEqual [0, 29]
       expect(displayBuffer.screenPositionForBufferPosition([100000, 0])).toEqual [12, 2]
       expect(displayBuffer.screenPositionForBufferPosition([100000, 100000])).toEqual [12, 2]
+
+    it "clips to the (left or right) edge of an atomic token without simply rounding up", ->
+      tabLength = 4
+      displayBuffer.setTabLength(tabLength)
+
+      buffer.insert([0, 0], '\t')
+      expect(displayBuffer.screenPositionForBufferPosition([0, 0])).toEqual [0, 0]
+      expect(displayBuffer.screenPositionForBufferPosition([0, 1])).toEqual [0, tabLength]
+
+    it "clips to the edge closest to the given position when it's inside a soft tab", ->
+      tabLength = 4
+      displayBuffer.setTabLength(tabLength)
+
+      buffer.insert([0, 0], '    ')
+      expect(displayBuffer.screenPositionForBufferPosition([0, 0])).toEqual [0, 0]
+      expect(displayBuffer.screenPositionForBufferPosition([0, 1])).toEqual [0, 0]
+      expect(displayBuffer.screenPositionForBufferPosition([0, 2])).toEqual [0, 0]
+      expect(displayBuffer.screenPositionForBufferPosition([0, 3])).toEqual [0, 4]
+      expect(displayBuffer.screenPositionForBufferPosition([0, 4])).toEqual [0, 4]
 
   describe "position translation in the presence of hard tabs", ->
     it "correctly translates positions on either side of a tab", ->
@@ -644,9 +801,10 @@ describe "DisplayBuffer", ->
     it "correctly translates positions on soft wrapped lines containing tabs", ->
       buffer.setText('\t\taa  bb  cc  dd  ee  ff  gg')
       displayBuffer.setSoftWrapped(true)
+      displayBuffer.setDefaultCharWidth(1)
       displayBuffer.setEditorWidthInChars(10)
-      expect(displayBuffer.screenPositionForBufferPosition([0, 10], wrapAtSoftNewlines: true)).toEqual [1, 0]
-      expect(displayBuffer.bufferPositionForScreenPosition([1, 0])).toEqual [0, 10]
+      expect(displayBuffer.screenPositionForBufferPosition([0, 10], wrapAtSoftNewlines: true)).toEqual [1, 4]
+      expect(displayBuffer.bufferPositionForScreenPosition([1, 0])).toEqual [0, 9]
 
   describe "::getMaxLineLength()", ->
     it "returns the length of the longest screen line", ->
@@ -656,22 +814,21 @@ describe "DisplayBuffer", ->
 
     it "correctly updates the location of the longest screen line when changes occur", ->
       expect(displayBuffer.getLongestScreenRow()).toBe 6
-      buffer.delete([[0, 0], [2, 0]])
+      buffer.delete([[3, 0], [5, 0]])
       expect(displayBuffer.getLongestScreenRow()).toBe 4
+
       buffer.delete([[4, 0], [5, 0]])
+      expect(displayBuffer.getLongestScreenRow()).toBe 5
+      expect(displayBuffer.getMaxLineLength()).toBe 56
 
-      expect(displayBuffer.getLongestScreenRow()).toBe 1
-      expect(displayBuffer.getMaxLineLength()).toBe 62
-
-      buffer.delete([[2, 0], [4, 0]])
-      expect(displayBuffer.getLongestScreenRow()).toBe 1
-      expect(displayBuffer.getMaxLineLength()).toBe 62
+      buffer.delete([[6, 0], [8, 0]])
+      expect(displayBuffer.getLongestScreenRow()).toBe 5
+      expect(displayBuffer.getMaxLineLength()).toBe 56
 
   describe "::destroy()", ->
     it "unsubscribes all display buffer markers from their underlying buffer marker (regression)", ->
       marker = displayBuffer.markBufferPosition([12, 2])
       displayBuffer.destroy()
-      expect(marker.bufferMarker.getSubscriptionCount()).toBe 0
       expect( -> buffer.insert([12, 2], '\n')).not.toThrow()
 
   describe "markers", ->
@@ -721,7 +878,7 @@ describe "DisplayBuffer", ->
       [markerChangedHandler, marker] = []
 
       beforeEach ->
-        marker = displayBuffer.markScreenRange([[5, 4], [5, 10]])
+        marker = displayBuffer.addMarkerLayer(maintainHistory: true).markScreenRange([[5, 4], [5, 10]])
         marker.onDidChange markerChangedHandler = jasmine.createSpy("markerChangedHandler")
 
       it "triggers the 'changed' event whenever the markers head's screen position changes in the buffer or on screen", ->
@@ -858,7 +1015,7 @@ describe "DisplayBuffer", ->
         expect(markerChangedHandler).not.toHaveBeenCalled()
 
       it "updates markers before emitting buffer change events, but does not notify their observers until the change event", ->
-        marker2 = displayBuffer.markBufferRange([[8, 1], [8, 1]])
+        marker2 = displayBuffer.addMarkerLayer(maintainHistory: true).markBufferRange([[8, 1], [8, 1]])
         marker2.onDidChange marker2ChangedHandler = jasmine.createSpy("marker2ChangedHandler")
         displayBuffer.onDidChange changeHandler = jasmine.createSpy("changeHandler").andCallFake -> onDisplayBufferChange()
 
@@ -893,18 +1050,19 @@ describe "DisplayBuffer", ->
           expect(markerChangedHandler).not.toHaveBeenCalled()
           expect(marker2ChangedHandler).not.toHaveBeenCalled()
           expect(marker3ChangedHandler).not.toHaveBeenCalled()
-          # but still updates the markers
+
+          # markers positions are updated based on the text change
           expect(marker.getScreenRange()).toEqual [[5, 4], [5, 10]]
           expect(marker.getHeadScreenPosition()).toEqual [5, 10]
           expect(marker.getTailScreenPosition()).toEqual [5, 4]
-          expect(marker2.isValid()).toBeTruthy()
-          expect(marker3.isValid()).toBeFalsy()
 
         buffer.undo()
         expect(changeHandler).toHaveBeenCalled()
         expect(markerChangedHandler).toHaveBeenCalled()
         expect(marker2ChangedHandler).toHaveBeenCalled()
         expect(marker3ChangedHandler).toHaveBeenCalled()
+        expect(marker2.isValid()).toBeTruthy()
+        expect(marker3.isValid()).toBeFalsy()
 
         # Redo change ----
 
@@ -918,12 +1076,15 @@ describe "DisplayBuffer", ->
           expect(markerChangedHandler).not.toHaveBeenCalled()
           expect(marker2ChangedHandler).not.toHaveBeenCalled()
           expect(marker3ChangedHandler).not.toHaveBeenCalled()
-          # but still updates the markers
+
+          # markers positions are updated based on the text change
           expect(marker.getScreenRange()).toEqual [[5, 7], [5, 13]]
           expect(marker.getHeadScreenPosition()).toEqual [5, 13]
           expect(marker.getTailScreenPosition()).toEqual [5, 7]
+
+          # but marker snapshots are not restored until the end of the undo.
           expect(marker2.isValid()).toBeFalsy()
-          expect(marker3.isValid()).toBeTruthy()
+          expect(marker3.isValid()).toBeFalsy()
 
         buffer.redo()
         expect(changeHandler).toHaveBeenCalled()
@@ -944,6 +1105,21 @@ describe "DisplayBuffer", ->
 
         expect(changeHandler).toHaveBeenCalled()
         expect(markerChangedHandler).toHaveBeenCalled()
+
+      it "emits the correct events when markers are mutated inside event listeners", ->
+        marker.onDidChange ->
+          if marker.getHeadScreenPosition().isEqual([5, 9])
+            marker.setHeadScreenPosition([5, 8])
+
+        marker.setHeadScreenPosition([5, 9])
+
+        headChanges = for [event] in markerChangedHandler.argsForCall
+          {old: event.oldHeadScreenPosition, new: event.newHeadScreenPosition}
+
+        expect(headChanges).toEqual [
+          {old: [5, 10], new: [5, 9]}
+          {old: [5, 9], new: [5, 8]}
+        ]
 
     describe "::findMarkers(attributes)", ->
       it "allows the startBufferRow and endBufferRow to be specified", ->
@@ -1011,7 +1187,7 @@ describe "DisplayBuffer", ->
         buffer.getMarker(marker2.id).destroy()
         expect(destroyedHandler).toHaveBeenCalled()
 
-    describe "DisplayBufferMarker::copy(attributes)", ->
+    describe "Marker::copy(attributes)", ->
       it "creates a copy of the marker with the given attributes merged in", ->
         initialMarkerCount = displayBuffer.getMarkerCount()
         marker1 = displayBuffer.markScreenRange([[5, 4], [5, 10]], a: 1, b: 2)
@@ -1020,27 +1196,16 @@ describe "DisplayBuffer", ->
         marker2 = marker1.copy(b: 3)
         expect(marker2.getBufferRange()).toEqual marker1.getBufferRange()
         expect(displayBuffer.getMarkerCount()).toBe initialMarkerCount + 2
-        expect(marker1.getAttributes()).toEqual a: 1, b: 2
-        expect(marker2.getAttributes()).toEqual a: 1, b: 3
-
-    describe "DisplayBufferMarker::getPixelRange()", ->
-      it "returns the start and end positions of the marker based on the line height and character widths assigned to the DisplayBuffer", ->
-        marker = displayBuffer.markScreenRange([[5, 10], [6, 4]])
-
-        displayBuffer.setLineHeightInPixels(20)
-        displayBuffer.setDefaultCharWidth(10)
-
-        for char in ['r', 'e', 't', 'u', 'r', 'n']
-          displayBuffer.setScopedCharWidth(["source.js", "keyword.control.js"], char, 11)
-
-        {start, end} = marker.getPixelRange()
-        expect(start.top).toBe 5 * 20
-        expect(start.left).toBe (4 * 10) + (6 * 11)
+        expect(marker1.getProperties()).toEqual a: 1, b: 2
+        expect(marker2.getProperties()).toEqual a: 1, b: 3
 
     describe 'when there are multiple DisplayBuffers for a buffer', ->
       describe 'when a marker is created', ->
         it 'the second display buffer will not emit a marker-created event when the marker has been deleted in the first marker-created event', ->
-          displayBuffer2 = new DisplayBuffer({buffer, tabLength})
+          displayBuffer2 = new DisplayBuffer({
+            buffer, tabLength, config: atom.config, grammarRegistry: atom.grammars,
+            packageManager: atom.packages, assert: ->
+          })
           displayBuffer.onDidCreateMarker markerCreated1 = jasmine.createSpy().andCallFake (marker) -> marker.destroy()
           displayBuffer2.onDidCreateMarker markerCreated2 = jasmine.createSpy()
 
@@ -1053,7 +1218,7 @@ describe "DisplayBuffer", ->
     [marker, decoration, decorationProperties] = []
     beforeEach ->
       marker = displayBuffer.markBufferRange([[2, 13], [3, 15]])
-      decorationProperties = {type: 'gutter', class: 'one'}
+      decorationProperties = {type: 'line-number', class: 'one'}
       decoration = displayBuffer.decorateMarker(marker, decorationProperties)
 
     it "can add decorations associated with markers and remove them", ->
@@ -1074,108 +1239,50 @@ describe "DisplayBuffer", ->
     describe "when a decoration is updated via Decoration::update()", ->
       it "emits an 'updated' event containing the new and old params", ->
         decoration.onDidChangeProperties updatedSpy = jasmine.createSpy()
-        decoration.setProperties type: 'gutter', class: 'two'
+        decoration.setProperties type: 'line-number', class: 'two'
 
         {oldProperties, newProperties} = updatedSpy.mostRecentCall.args[0]
         expect(oldProperties).toEqual decorationProperties
-        expect(newProperties).toEqual type: 'gutter', class: 'two', id: decoration.id
+        expect(newProperties).toEqual {type: 'line-number', gutterName: 'line-number', class: 'two'}
 
-  describe "::setScrollTop", ->
-    beforeEach ->
-      displayBuffer.manageScrollPosition = true
-      displayBuffer.setLineHeightInPixels(10)
-
-    it "disallows negative values", ->
-      displayBuffer.setHeight(displayBuffer.getScrollHeight() + 100)
-      expect(displayBuffer.setScrollTop(-10)).toBe 0
-      expect(displayBuffer.getScrollTop()).toBe 0
-
-    it "disallows values that would make ::getScrollBottom() exceed ::getScrollHeight()", ->
-      displayBuffer.setHeight(50)
-      maxScrollTop = displayBuffer.getScrollHeight() - displayBuffer.getHeight()
-
-      expect(displayBuffer.setScrollTop(maxScrollTop)).toBe maxScrollTop
-      expect(displayBuffer.getScrollTop()).toBe maxScrollTop
-
-      expect(displayBuffer.setScrollTop(maxScrollTop + 50)).toBe maxScrollTop
-      expect(displayBuffer.getScrollTop()).toBe maxScrollTop
-
-  describe "::setScrollLeft", ->
-    beforeEach ->
-      displayBuffer.manageScrollPosition = true
-      displayBuffer.setLineHeightInPixels(10)
-      displayBuffer.setDefaultCharWidth(10)
-
-    it "disallows negative values", ->
-      displayBuffer.setWidth(displayBuffer.getScrollWidth() + 100)
-      expect(displayBuffer.setScrollLeft(-10)).toBe 0
-      expect(displayBuffer.getScrollLeft()).toBe 0
-
-    it "disallows values that would make ::getScrollRight() exceed ::getScrollWidth()", ->
-      displayBuffer.setWidth(50)
-      maxScrollLeft = displayBuffer.getScrollWidth() - displayBuffer.getWidth()
-
-      expect(displayBuffer.setScrollLeft(maxScrollLeft)).toBe maxScrollLeft
-      expect(displayBuffer.getScrollLeft()).toBe maxScrollLeft
-
-      expect(displayBuffer.setScrollLeft(maxScrollLeft + 50)).toBe maxScrollLeft
-      expect(displayBuffer.getScrollLeft()).toBe maxScrollLeft
+    describe "::getDecorations(properties)", ->
+      it "returns decorations matching the given optional properties", ->
+        expect(displayBuffer.getDecorations()).toEqual [decoration]
+        expect(displayBuffer.getDecorations(class: 'two').length).toEqual 0
+        expect(displayBuffer.getDecorations(class: 'one').length).toEqual 1
 
   describe "::scrollToScreenPosition(position, [options])", ->
-    beforeEach ->
-      displayBuffer.manageScrollPosition = true
-      displayBuffer.setLineHeightInPixels(10)
-      displayBuffer.setDefaultCharWidth(10)
-      displayBuffer.setHorizontalScrollbarHeight(0)
-      displayBuffer.setHeight(50)
-      displayBuffer.setWidth(50)
+    it "triggers ::onDidRequestAutoscroll with the logical coordinates along with the options", ->
+      scrollSpy = jasmine.createSpy("::onDidRequestAutoscroll")
+      displayBuffer.onDidRequestAutoscroll(scrollSpy)
 
-    it "sets the scroll top and scroll left so the given screen position is in view", ->
       displayBuffer.scrollToScreenPosition([8, 20])
-      expect(displayBuffer.getScrollBottom()).toBe (9 + displayBuffer.getVerticalScrollMargin()) * 10
-      expect(displayBuffer.getScrollRight()).toBe (20 + displayBuffer.getHorizontalScrollMargin()) * 10
+      displayBuffer.scrollToScreenPosition([8, 20], center: true)
+      displayBuffer.scrollToScreenPosition([8, 20], center: false, reversed: true)
 
-    describe "when the 'center' option is true", ->
-      it "vertically scrolls to center the given position vertically", ->
-        displayBuffer.scrollToScreenPosition([8, 20], center: true)
-        expect(displayBuffer.getScrollTop()).toBe (8 * 10) + 5 - (50 / 2)
-        expect(displayBuffer.getScrollRight()).toBe (20 + displayBuffer.getHorizontalScrollMargin()) * 10
+      expect(scrollSpy).toHaveBeenCalledWith(screenRange: [[8, 20], [8, 20]], options: {})
+      expect(scrollSpy).toHaveBeenCalledWith(screenRange: [[8, 20], [8, 20]], options: {center: true})
+      expect(scrollSpy).toHaveBeenCalledWith(screenRange: [[8, 20], [8, 20]], options: {center: false, reversed: true})
 
-      it "does not scroll vertically if the position is already in view", ->
-        displayBuffer.scrollToScreenPosition([4, 20], center: true)
-        expect(displayBuffer.getScrollTop()).toBe 0
+  describe "::decorateMarker", ->
+    describe "when decorating gutters", ->
+      [marker] = []
 
-  describe "scroll width", ->
-    cursorWidth = 1
-    beforeEach ->
-      displayBuffer.setDefaultCharWidth(10)
+      beforeEach ->
+        marker = displayBuffer.markBufferRange([[1, 0], [1, 0]])
 
-    it "recomputes the scroll width when the default character width changes", ->
-      expect(displayBuffer.getScrollWidth()).toBe 10 * 65 + cursorWidth
+      it "creates a decoration that is both of 'line-number' and 'gutter' type when called with the 'line-number' type", ->
+        decorationProperties = {type: 'line-number', class: 'one'}
+        decoration = displayBuffer.decorateMarker(marker, decorationProperties)
+        expect(decoration.isType('line-number')).toBe true
+        expect(decoration.isType('gutter')).toBe true
+        expect(decoration.getProperties().gutterName).toBe 'line-number'
+        expect(decoration.getProperties().class).toBe 'one'
 
-      displayBuffer.setDefaultCharWidth(12)
-      expect(displayBuffer.getScrollWidth()).toBe 12 * 65 + cursorWidth
-
-    it "recomputes the scroll width when the max line length changes", ->
-      buffer.insert([6, 12], ' ')
-      expect(displayBuffer.getScrollWidth()).toBe 10 * 66 + cursorWidth
-
-      buffer.delete([[6, 10], [6, 12]], ' ')
-      expect(displayBuffer.getScrollWidth()).toBe 10 * 64 + cursorWidth
-
-    it "recomputes the scroll width when the scoped character widths change", ->
-      operatorWidth = 20
-      displayBuffer.setScopedCharWidth(['source.js', 'keyword.operator.js'], '<', operatorWidth)
-      expect(displayBuffer.getScrollWidth()).toBe 10 * 64 + operatorWidth + cursorWidth
-
-    it "recomputes the scroll width when the scoped character widths change in a batch", ->
-      operatorWidth = 20
-
-      displayBuffer.onDidChangeCharacterWidths changedSpy = jasmine.createSpy()
-
-      displayBuffer.batchCharacterMeasurement ->
-        displayBuffer.setScopedCharWidth(['source.js', 'keyword.operator.js'], '<', operatorWidth)
-        displayBuffer.setScopedCharWidth(['source.js', 'keyword.operator.js'], '?', operatorWidth)
-
-      expect(displayBuffer.getScrollWidth()).toBe 10 * 63 + operatorWidth * 2 + cursorWidth
-      expect(changedSpy.callCount).toBe 1
+      it "creates a decoration that is only of 'gutter' type if called with the 'gutter' type and a 'gutterName'", ->
+        decorationProperties = {type: 'gutter', gutterName: 'test-gutter', class: 'one'}
+        decoration = displayBuffer.decorateMarker(marker, decorationProperties)
+        expect(decoration.isType('gutter')).toBe true
+        expect(decoration.isType('line-number')).toBe false
+        expect(decoration.getProperties().gutterName).toBe 'test-gutter'
+        expect(decoration.getProperties().class).toBe 'one'
